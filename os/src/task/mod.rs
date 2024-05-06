@@ -14,9 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::{get_time, get_time_ms};
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -43,6 +45,9 @@ pub struct TaskManager {
 pub struct TaskManagerInner {
     /// task list
     tasks: [TaskControlBlock; MAX_APP_NUM],
+    /// taskinfo list
+    taskinfos: [TaskInfo; MAX_APP_NUM],
+
     /// id of current `Running` task
     current_task: usize,
 }
@@ -59,11 +64,19 @@ lazy_static! {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
         }
+        let taskinfos = [TaskInfo {
+            status:TaskStatus::UnInit,
+            syscall_times:[0; MAX_SYSCALL_NUM],
+            time:0,
+            // time:get_time(),
+
+        };MAX_APP_NUM];
         TaskManager {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
+                    taskinfos,
                     current_task: 0,
                 })
             },
@@ -78,6 +91,8 @@ impl TaskManager {
     /// But in ch3, we load apps statically, so the first task is a real app.
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
+        inner.taskinfos[0].status = TaskStatus::Running;
+        inner.taskinfos[0].time = get_time();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
@@ -95,6 +110,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Ready;
+        inner.taskinfos[current].status = TaskStatus::Ready;
     }
 
     /// Change the status of current `Running` task into `Exited`.
@@ -102,6 +118,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Exited;
+        inner.taskinfos[current].status = TaskStatus::Exited;
     }
 
     /// Find next task to run and return task id.
@@ -122,7 +139,12 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            inner.taskinfos[next].status = TaskStatus::Running;
+            if inner.taskinfos[next].time == 0 {
+                inner.taskinfos[next].time = get_time_ms();
+            }
             inner.current_task = next;
+            // self.set_current_taskinfo_firsty_time();
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -133,6 +155,35 @@ impl TaskManager {
             // go back to user mode
         } else {
             panic!("All applications completed!");
+        }
+    }
+
+    // 返回当前的taskinfo
+    fn current_taskinfo(&self) -> TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        // 返回一个info拷贝
+        let mut curr_task = inner.taskinfos[current].clone();
+        // 一开始curr_task.time里保存的是第一次调度时间，但是用户想要得到的是差值，因此在这里里进行处理。
+        curr_task.time = get_time_ms() - curr_task.time;
+        println!("time : {}", curr_task.time);
+        curr_task
+    }
+
+    fn add_current_taskinfo_syscall_times(&self, which: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.taskinfos[current].syscall_times[which] += 1;
+    }
+
+    fn set_current_taskinfo_firsty_time(&self) {
+        // 这一段代码应该可以删了
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        if inner.taskinfos[current].time == 0 {
+            // 表示为被调用过
+            inner.taskinfos[current].time = get_time_ms();
         }
     }
 }
@@ -168,4 +219,19 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// return current taskinfo
+pub fn get_current_taskinfo() -> TaskInfo {
+    TASK_MANAGER.current_taskinfo()
+}
+
+/// 增加相依的syscall调用次数
+pub fn add_taskinfo_syscall_times(which: usize) {
+    TASK_MANAGER.add_current_taskinfo_syscall_times(which);
+}
+
+/// 增加当前任务的运行时间
+pub fn set_taskinfo_first_time() {
+    TASK_MANAGER.set_current_taskinfo_firsty_time();
 }
