@@ -17,7 +17,8 @@ mod context;
 use crate::config::{TRAMPOLINE, TRAP_CONTEXT_BASE};
 use crate::syscall::syscall;
 use crate::task::{
-    current_trap_cx, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
+    add_taskinfo_syscall_times, current_trap_cx, current_user_token, exit_current_and_run_next,
+    suspend_current_and_run_next,
 };
 use crate::timer::set_next_trigger;
 use core::arch::{asm, global_asm};
@@ -56,13 +57,15 @@ pub fn enable_timer_interrupt() {
 /// trap handler
 #[no_mangle]
 pub fn trap_handler() -> ! {
-    set_kernel_trap_entry();
+    set_kernel_trap_entry(); // 设置指向处理trap的起始位置
     let cx = current_trap_cx();
     let scause = scause::read(); // get trap cause
     let stval = stval::read(); // get extra value
-    // trace!("into {:?}", scause.cause());
+                               // trace!("into {:?}", scause.cause());
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
+            // 在这里进行记录执行了多少次。
+            add_taskinfo_syscall_times(cx.x[17]);
             // jump to next instruction anyway
             cx.sepc += 4;
             // get system call return value
@@ -101,8 +104,8 @@ pub fn trap_handler() -> ! {
 /// set the reg a0 = trap_cx_ptr, reg a1 = phy addr of usr page table,
 /// finally, jump to new addr of __restore asm function
 pub fn trap_return() -> ! {
-    set_user_trap_entry();
-    let trap_cx_ptr = TRAP_CONTEXT_BASE;
+    set_user_trap_entry(); // 让应用Trap到S的时候可以跳转到__alltraps
+    let trap_cx_ptr = TRAP_CONTEXT_BASE; // TRAP_CONTEXT_BASE = TRAMPOLINE - PAGE_SIZE;
     let user_satp = current_user_token();
     extern "C" {
         fn __alltraps();

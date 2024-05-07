@@ -14,8 +14,11 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::{get_time, get_time_ms};
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -46,6 +49,9 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+
+    /// task info list
+    taskinfos: Vec<TaskInfo>,
 }
 
 lazy_static! {
@@ -55,8 +61,14 @@ lazy_static! {
         let num_app = get_num_app();
         println!("num_app = {}", num_app);
         let mut tasks: Vec<TaskControlBlock> = Vec::new();
+        let mut taskinfos : Vec<TaskInfo> = Vec::new();
         for i in 0..num_app {
             tasks.push(TaskControlBlock::new(get_app_data(i), i));
+            taskinfos.push(TaskInfo{
+                status:TaskStatus::UnInit,
+                syscall_times:[0; MAX_SYSCALL_NUM],
+                time:0,
+            });
         }
         TaskManager {
             num_app,
@@ -64,6 +76,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    taskinfos,
                 })
             },
         }
@@ -80,6 +93,9 @@ impl TaskManager {
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
+        // 修改task对应的taskinfo
+        inner.taskinfos[0].status = TaskStatus::Running;
+        inner.taskinfos[0].time = get_time();
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -140,6 +156,10 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            inner.taskinfos[next].status = TaskStatus::Running;
+            if inner.taskinfos[next].time == 0 {
+                inner.taskinfos[next].time = get_time_ms();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +172,38 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    // 返回当前的taskinfo
+    fn get_current_taskinfo(&self) -> TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        // 返回一个info拷贝
+        let mut curr_task = inner.taskinfos[current].clone();
+        // 一开始curr_task.time里保存的是第一次调度时间，但是用户想要得到的是差值，因此在这里里进行处理。
+        curr_task.time = get_time_ms() - curr_task.time;
+        println!("time : {}", curr_task.time);
+        curr_task
+    }
+
+    fn add_current_taskinfo_syscall_times(&self, which: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.taskinfos[current].syscall_times[which] += 1;
+    }
+
+    fn map_current_new_area_by_address(&self, start:usize, len:usize, port:usize) -> isize {
+        let mut inner =  self.inner.exclusive_access();
+        let cur = inner.current_task;
+        // 找到当前的tasks对其分配新的空间
+        inner.tasks[cur].map_new_area_by_address(start, len, port)
+    }
+
+    fn unmap_current_area_by_address(&self, start:usize, len:usize) -> isize {
+        let mut inner =  self.inner.exclusive_access();
+        let cur = inner.current_task;
+        // 找到当前的tasks对其分=删除映射
+        inner.tasks[cur].unmap_area_by_address(start, len)
     }
 }
 
@@ -201,4 +253,25 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// return current taskinfo
+pub fn get_current_taskinfo() -> TaskInfo {
+    TASK_MANAGER.get_current_taskinfo()
+}
+
+/// 增加相依的syscall调用次数
+pub fn add_taskinfo_syscall_times(which: usize) {
+    TASK_MANAGER.add_current_taskinfo_syscall_times(which);
+}
+
+/// 根据传入的开始地址start以及长度len来映射一块新的空间
+pub fn map_new_area_by_address(start:usize, len:usize, port:usize) -> isize{
+    //todo
+    TASK_MANAGER.map_current_new_area_by_address(start, len, port)
+}
+
+/// 根据传入的地址来进行映射删除
+pub fn unmap_area_by_address(start:usize, len:usize) ->isize {
+    TASK_MANAGER.unmap_current_area_by_address(start, len)
 }

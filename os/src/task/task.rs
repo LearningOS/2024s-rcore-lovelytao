@@ -2,7 +2,8 @@
 use super::TaskContext;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
+    frame_alloc, kernel_stack_position, MapPermission, MemorySet, PTEFlags, PhysPageNum, VPNRange,
+    VirtAddr, KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
 
@@ -95,6 +96,117 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+    /// 根据传入的起始虚拟地址以及长度和标识来请求新的映射
+    pub fn map_new_area_by_address(
+        &mut self,
+        start: usize,
+        len: usize,
+        port: usize,
+        // index: usize,
+    ) -> isize {
+        // 是否应该判断一下会不会溢出？
+        // println!("port{}", port);
+        // println!("port as u8{}", port as u8);
+        // let s_start: usize = VirtAddr(start).floor().into();
+        // let e_start: usize = VirtAddr(start + len -1).floor().into();
+        // println!("start: {:#x}", s_start);
+        // println!("end: {:#x}", e_start);
+        // println!("pear: {:#b}",MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U);
+        // if port == 0 || (port & !0x7 != 0) {
+        //     return -1;
+        // }
+        // if let Some(_) = self.memory_set.translate(VirtAddr(start).floor()) {
+        //     // 表示已经存在了
+        //     return -1;
+        // }
+        // if let Some(_) = self
+        //     .memory_set
+        //     .translate(VirtAddr(start + len - 1).floor())
+        // {
+        //     println!("aaaaaaaaaaaaaaaaaaaaaaa");
+        //     // 表示已经存在了
+        //     return -1;
+        // }
+        // self.memory_set.insert_framed_area(
+        //     VirtAddr(start).floor().into(),
+        //     VirtAddr(start + len - 1).floor().into(),
+        //     // port xwr 210 而MapPermission里是 uxwr 421 ，因此需要将port先左移一位
+        //     MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U,
+        // );
+        if port == 0 || (port & !0x7 != 0) {
+            return -1;
+        }
+        // if VirtAddr(start) != VirtAddr(start).floor().into() { // 表示地址没对齐PAGE_SIZE
+        if start % 4096 != 0 {
+            // 表示地址没对齐PAGE_SIZE
+            // println!("{} map  x : VPN:{:#x}", index, start);
+            return -1;
+        }
+        // VPNRange 好像左闭右开
+        for vpn in VPNRange::new(VirtAddr(start).floor(), VirtAddr(start + len).ceil()) {
+            // let tmp: usize = vpn.into();
+            if let Some(pte) = self.memory_set.page_table.find_pte(vpn) {
+                // 表示已经存在了
+                if pte.is_valid() {
+                    // println!("{} map  xxxx : VPN:{:#x}", index, tmp);
+                    return -1;
+                }
+                
+            }
+
+            // println!("{} map : VPN:{:#x}", index, tmp);
+            // let pte = self.memory_set.page_table.find_pte(vpn).unwrap();
+            // if pte.is_valid() {
+            //     return -1;
+            // }
+            let frame = frame_alloc().unwrap();
+            let ppn = frame.ppn;
+            self.memory_set.page_table.map(
+                vpn,
+                ppn,
+                PTEFlags::from_bits((port << 1) as u8).unwrap() | PTEFlags::U,
+            );
+            self.memory_set.page_table.frames.push(frame);
+        }
+        // println!("map finish.........");
+
+        0
+    }
+
+    /// 删除映射
+    pub fn unmap_area_by_address(&mut self, start: usize, len: usize) -> isize {
+        // if let None = self.memory_set.translate(VirtAddr(start).floor().into()) {
+        //     // 表示不存在
+        //     return -1;
+        // };
+
+        // if let None = self
+        //     .memory_set
+        //     .translate(VirtAddr(start + len).floor().into())
+        // {
+        //     // 表示已经存在了
+        //     return -1;
+        // }
+        // self.memory_set
+        // .unmap_framed_area(VirtAddr(start), VirtAddr(start + len))
+
+        for vpn in VPNRange::new(VirtAddr(start).floor(), VirtAddr(start + len).ceil()) {
+            // let tmp: usize = vpn.into();
+            // println!("VPN:{:#x}", tmp);
+            let pte = self.memory_set.page_table.find_pte(vpn).unwrap();
+            if !pte.is_valid() {
+                return -1;
+            }
+            if let None = self.memory_set.page_table.find_pte(vpn) {
+                // 表示该页面未映射， 返回错误
+                return -1;
+            }
+            self.memory_set.page_table.unmap(vpn);
+        }
+        // println!("map finish.........");
+
+        0
     }
 }
 
