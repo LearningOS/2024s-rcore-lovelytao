@@ -50,6 +50,10 @@ impl Debug for PhysPageNum {
 
 impl From<usize> for PhysAddr {
     fn from(v: usize) -> Self {
+        // SV39支持的物理地址位宽为56为，因此在生成PhysAddr时候仅使用usize较低的56位
+        // 反过来，从 PhysAddr 等类型也很容易得到对应的 usize
+        // 其实由于我们在声明结构体的时候将字段公开了出来，
+        // 从物理地址变量 pa 得到它的 usize 表示的更简便方法是直接 pa.0 。
         Self(v & ((1 << PA_WIDTH_SV39) - 1))
     }
 }
@@ -60,6 +64,7 @@ impl From<usize> for PhysPageNum {
 }
 impl From<usize> for VirtAddr {
     fn from(v: usize) -> Self {
+        // 生成虚拟地址 VirtAddr 的时候仅使用 usize 较低的 39 位
         Self(v & ((1 << VA_WIDTH_SV39) - 1))
     }
 }
@@ -177,16 +182,22 @@ impl PhysAddr {
 }
 impl PhysPageNum {
     /// Get the reference of page table(array of ptes)
+    /// 返回的是一个页表项定长数组的可变引用，代表多级页表中的一个节点
     pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
         let pa: PhysAddr = (*self).into();
+        // 根据pa返回对应物理页帧里存放的数据，这里返回的是存放PTE的物理页表，每个PTE 8个字节，一页总共512   8 * 512 = 4096 B = 4KiB
         unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512) }
     }
     /// Get the reference of page(array of bytes)
+    /// 返回的是一个字节数组的可变引用，可以以字节为粒度对物理页帧上的数据进行访问
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
+        // 创建一个可变切片，第一个参数是原始指针，第二个参数是切片的长度，函数返回一个可变切片
+        // 等于是获得pa指向的一块物理内存里的区域，大小位4096B = 4KiB  u8大小为一字节
         unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, 4096) }
     }
     /// Get the mutable reference of physical address
+    /// 获取一个恰好放在一个物理页帧开头的类型为 T 的数据的可变引用
     pub fn get_mut<T>(&self) -> &'static mut T {
         let pa: PhysAddr = (*self).into();
         pa.get_mut()

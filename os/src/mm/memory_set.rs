@@ -35,13 +35,15 @@ lazy_static! {
 }
 /// address space
 pub struct MemorySet {
-    page_table: PageTable,
+    /// 页表
+    pub page_table: PageTable,
     areas: Vec<MapArea>,
 }
 
 impl MemorySet {
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
+        // 创建一个新的空的地址空间
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
@@ -63,9 +65,51 @@ impl MemorySet {
             None,
         );
     }
+
+    /// 删除映射
+    pub fn unmap_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> isize {
+        let mut index = start_va.floor();
+        while index <= end_va.floor() {
+            if let None = self.translate(index) {
+                // 如果该页面未映射，返回错误
+                return -1;
+            }
+            if let Some(area) = self
+                .areas
+                .iter_mut()
+                .find(|area| area.vpn_range.get_start() <= index)
+            {
+                if end_va.floor() <= area.vpn_range.get_end() {
+                    for vpn in VPNRange::new(index, end_va.floor()) {
+                        area.unmap_one(&mut self.page_table, vpn);
+                    }
+                    let tmp: usize = index.into();
+                    // 一坨屎写的
+                    area.vpn_range = VPNRange::new(area.vpn_range.get_start(), (tmp - 1).into());
+                    index = end_va.ceil();
+                } else {
+                    for vpn in VPNRange::new(index, area.vpn_range.get_end()) {
+                        area.unmap_one(&mut self.page_table, vpn);
+                    }
+                    let tmp: usize = index.into();
+                    // 一坨屎写的
+                    area.vpn_range = VPNRange::new(area.vpn_range.get_start(), (tmp - 1).into());
+                    index = area.vpn_range.get_end();
+                    let tmp: usize = index.into();
+                    index = (tmp + 1).into();
+                }
+                // 说明这个area里有要删除的内容
+            }
+        }
+        0
+    }
+
+    /// 在当前地址空间插入一个新的逻辑段map_area，
+    /// 如果它是以Framed方式映射到物理内存，还可以可选地在哪些被映射到的物理页帧上写入一些初始化数据data
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+        map_area.map(&mut self.page_table); // 将map_area里VPNRange里的地址一一映射到page_table里
         if let Some(data) = data {
+            // 如果有数据，数据存放到传入的map_area对应的空间里面，感觉map_area就是用来一次性分配很多空间用的
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
@@ -73,12 +117,13 @@ impl MemorySet {
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
-            VirtAddr::from(TRAMPOLINE).into(),
+            VirtAddr::from(TRAMPOLINE).into(), // 2^64 - PAGE_SIZE(4096) 就是放在最顶上的一页
             PhysAddr::from(strampoline as usize).into(),
             PTEFlags::R | PTEFlags::X,
         );
     }
     /// Without kernel stacks.
+    /// 生成内核地址空间
     pub fn new_kernel() -> Self {
         let mut memory_set = Self::new_bare();
         // map trampoline
@@ -91,12 +136,14 @@ impl MemorySet {
             ".bss [{:#x}, {:#x})",
             sbss_with_stack as usize, ebss as usize
         );
+
+        // 从低地址到高地址 依次创建 5 个逻辑段并通过 push 方法将它们插入到内核地址空间中
         info!("mapping .text section");
         memory_set.push(
             MapArea::new(
                 (stext as usize).into(),
                 (etext as usize).into(),
-                MapType::Identical,
+                MapType::Identical, // 直接映射
                 MapPermission::R | MapPermission::X,
             ),
             None,
@@ -180,12 +227,13 @@ impl MemorySet {
                 );
             }
         }
+        // 映射用户栈 User Stack
         // map user stack with U flags
         let max_end_va: VirtAddr = max_end_vpn.into();
         let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
-        user_stack_bottom += PAGE_SIZE;
-        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        user_stack_bottom += PAGE_SIZE; // 留出 Guard Page的空间 4KiB
+        let user_stack_top = user_stack_bottom + USER_STACK_SIZE; // 留出8KiB的UserStack空间
         memory_set.push(
             MapArea::new(
                 user_stack_bottom.into(),
@@ -205,13 +253,13 @@ impl MemorySet {
             ),
             None,
         );
-        // map TrapContext
+        // map TrapContext  映射TrapContext到Trampoline下面
         memory_set.push(
             MapArea::new(
                 TRAP_CONTEXT_BASE.into(),
                 TRAMPOLINE.into(),
                 MapType::Framed,
-                MapPermission::R | MapPermission::W,
+                MapPermission::R | MapPermission::W, // 没有U，表示在内核态使用
             ),
             None,
         );
@@ -272,6 +320,7 @@ pub struct MapArea {
 }
 
 impl MapArea {
+    /// new a MapArea
     pub fn new(
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -287,39 +336,49 @@ impl MapArea {
             map_perm,
         }
     }
+    /// 将虚拟页号 VPN映射到页表page_table中
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
+                // 直接映射时，物理页号等于虚拟页号
                 ppn = PhysPageNum(vpn.0);
             }
             MapType::Framed => {
+                // Framed映射时，需要分配一个物理页帧让当前的虚拟页面可以映射过去
                 let frame = frame_alloc().unwrap();
                 ppn = frame.ppn;
                 self.data_frames.insert(vpn, frame);
             }
         }
+        // 页表项的标志位来源于当前逻辑段的类型为MapPermission的统一配置，只需将其转换为PTEFlags
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
+    ///
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
+            // 当以Framed映射时，将虚拟页表被映射到的物理页帧FrameTracker从data_frames中移除
+            // 这样这个物理页帧才能立即被回收以备后续分配
             self.data_frames.remove(&vpn);
         }
         page_table.unmap(vpn);
     }
+    ///
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
+    ///
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
     }
+    ///
     #[allow(unused)]
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
@@ -327,6 +386,7 @@ impl MapArea {
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
+    ///
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
@@ -361,7 +421,9 @@ impl MapArea {
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
+    /// 直接映射
     Identical,
+    /// 间接映射  
     Framed,
 }
 
