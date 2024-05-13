@@ -21,7 +21,7 @@ pub fn get_app_data(app_id: usize) -> &'static [u8] {
     assert!(app_id < num_app);
     unsafe {
         core::slice::from_raw_parts(
-            app_start[app_id] as *const u8,
+            app_start[app_id] as *const u8, // 将这个起始地址转换为 *const u8 类型的指针，表示一个指向 u8 类型的指针。
             app_start[app_id + 1] - app_start[app_id],
         )
     }
@@ -39,8 +39,10 @@ lazy_static! {
         unsafe {
             for _ in 0..num_app {
                 let mut end = start;
+                // read_volatile 直接读取内存中的值
+                // 简单的从地址内存中读取一个值，并作为'u8'返回，读取一个字节的大小
                 while end.read_volatile() != b'\0' {
-                    end = end.add(1);
+                    end = end.add(1); // 将地址增加1
                 }
                 let slice = core::slice::from_raw_parts(start, end as usize - start as usize);
                 let str = core::str::from_utf8(slice).unwrap();

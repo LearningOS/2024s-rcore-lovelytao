@@ -17,8 +17,10 @@ pub struct Processor {
     ///The task currently executing on the current processor
     current: Option<Arc<TaskControlBlock>>,
 
+    /// taskinfo list
+
     ///The basic control flow of each core, helping to select and switch process
-    idle_task_cx: TaskContext,
+    idle_task_cx: TaskContext, // 每个核心的基本控制流程，有助于流程的选择和切换
 }
 
 impl Processor {
@@ -37,6 +39,7 @@ impl Processor {
 
     ///Get current task in moving semanteme
     pub fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
+        // 先获取当前任务控制快的引用，然后将self.current设置为None
         self.current.take()
     }
 
@@ -68,6 +71,9 @@ pub fn run_tasks() {
             // release processor manually
             drop(processor);
             unsafe {
+                // 从idle控制流切换到下一个任务
+                // 从内核空间切换到用户空间
+                // 核第四章里第一次启动一个task时候一样，__switch可以为空，只当做一个占位符
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
         } else {
@@ -109,3 +115,4 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
 }
+

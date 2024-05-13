@@ -32,6 +32,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             loop {
                 c = console_getchar();
                 if c == 0 {
+                    // 返回0说明还没有输入，调用suspend_current_and_runt_next暂时切换到其他进程
                     suspend_current_and_run_next();
                     continue;
                 } else {
@@ -41,6 +42,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             let ch = c as u8;
             let mut buffers = translated_byte_buffer(current_user_token(), buf, len);
             unsafe {
+                // 将取到的值写入应用地址空间
                 buffers[0].as_mut_ptr().write_volatile(ch);
             }
             1
