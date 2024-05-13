@@ -40,6 +40,8 @@ pub fn kernel_token() -> usize {
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
+    /// 管理mmap生成的地址
+    mmap_data_frames: BTreeMap<VirtPageNum, FrameTracker>,
 }
 
 impl MemorySet {
@@ -48,6 +50,7 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
+            mmap_data_frames: BTreeMap::new(),
         }
     }
     /// Get the page table token
@@ -317,6 +320,43 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    /// map vpn and append the area to mmap_data_frame
+    #[allow(unused)]
+    pub fn mmap(&mut self, vpn: VirtPageNum, port: usize) -> bool {
+        if let Some(pte) = self.page_table.find_pte(vpn) {
+            if pte.is_valid() {
+                return false;
+            }
+        }
+        let frame = frame_alloc().unwrap();
+        let ppn = frame.ppn;
+        self.mmap_data_frames.insert(vpn, frame);
+        self.page_table.map(
+            vpn,
+            ppn,
+            PTEFlags::from_bits((port << 1) as u8).unwrap() | PTEFlags::U,
+        );
+        true
+    }
+
+    /// umapp vpn  and delet the area from mmap_data_frame
+    #[allow(unused)]
+    pub fn unmap(&mut self, vpn: VirtPageNum) -> bool {
+        let pte = self.page_table.find_pte(vpn);
+        if pte.is_none() {
+            return false;
+        } else {
+            if !pte.unwrap().is_valid() {
+                return false;
+            } else {
+                self.page_table.unmap(vpn);
+                self.mmap_data_frames.remove(&vpn);
+                return true;
+            }
+        }
+        true
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

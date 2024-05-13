@@ -39,6 +39,7 @@ pub use processor::{
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // There must be an application running.
+    // 这里拿到task的时候，已经从PROCESSOR里转移出来了，即PROCESSOR里的current变成None了
     let task = take_current_task().unwrap();
 
     // ---- access current TCB exclusively
@@ -61,6 +62,7 @@ pub const IDLE_PID: usize = 0;
 /// Exit the current 'Running' task and run the next task in task list.
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
+    // 从处理器监控 PROCESSOR 中取出而不是得到一份拷贝
     let task = take_current_task().unwrap();
 
     let pid = task.getpid();
@@ -75,6 +77,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // **** access current TCB exclusively
     let mut inner = task.inner_exclusive_access();
     // Change status to Zombie
+    // 进程控制块中的状态修改为 TaskStatus::Zombie 即僵尸进程，
+    // 这样它后续才能被父进程在 waitpid 系统调用的时候回收
     inner.task_status = TaskStatus::Zombie;
     // Record exit code
     inner.exit_code = exit_code;
@@ -82,6 +86,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // ++++++ access initproc TCB exclusively
     {
+        // 将当前进程的子进程挂在初始进程initproc下面
         let mut initproc_inner = INITPROC.inner_exclusive_access();
         for child in inner.children.iter() {
             child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
@@ -92,6 +97,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     inner.children.clear();
     // deallocate user space
+    // 这将导致应用地址空间被回收（即进程的数据和代码对应的物理页帧都被回收）
+    // 但用来存放页表的那些物理页帧此时还不会被回收（会由父进程最后回收子进程剩余的占用资源）
     inner.memory_set.recycle_data_pages();
     // drop file descriptors
     inner.fd_table.clear();

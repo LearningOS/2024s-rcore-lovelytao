@@ -85,3 +85,5 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
 }
+
+pub use process::TaskInfo;

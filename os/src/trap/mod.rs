@@ -17,7 +17,8 @@ mod context;
 use crate::config::{TRAMPOLINE, TRAP_CONTEXT_BASE};
 use crate::syscall::syscall;
 use crate::task::{
-    current_trap_cx, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
+    current_task, current_trap_cx, current_user_token, exit_current_and_run_next,
+    suspend_current_and_run_next,
 };
 use crate::timer::set_next_trigger;
 use core::arch::{asm, global_asm};
@@ -63,12 +64,27 @@ pub fn trap_handler() -> ! {
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
             // jump to next instruction anyway
+            // let mut curr_task = current_task().unwrap().inner_exclusive_access();
+            // add_taskinfo_syscall_time();
+            let syscall_id = current_trap_cx().x[17];
+
+            current_task()
+                .unwrap()
+                .inner_exclusive_access()
+                .taskinfo
+                .syscall_times[syscall_id] += 1;
+
             let mut cx = current_trap_cx();
+            // 将当前进程Trap上下文中的sepc向后移动4个字节
+            // 使得它回到用户态之后，会从发出系统调用的 ecall 指令的下一条指令开始执行
+            // 之后当我们复制地址空间的时候，子进程地址空间Trap上下文的sepc也是移动后的值
             cx.sepc += 4;
             // get system call return value
             let result = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12], cx.x[13]]);
             // cx is changed during sys_exec, so we have to call it again
             cx = current_trap_cx();
+
+            // 修改a0 返回值为系统调用的result
             cx.x[10] = result as usize;
         }
         Trap::Exception(Exception::StoreFault)
