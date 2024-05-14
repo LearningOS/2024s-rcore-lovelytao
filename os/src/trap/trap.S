@@ -56,6 +56,6 @@ __restore:
     .endr
     # release TrapContext on kernel stack
     addi sp, sp, 34*8
-    # now sp->kernel stack, sscratch->user stack
+    # now sp->user stack, sscratch->kernel stack
     csrrw sp, sscratch, sp
     sret
