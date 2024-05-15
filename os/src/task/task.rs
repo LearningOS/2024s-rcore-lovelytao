@@ -4,15 +4,17 @@ use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::MAX_SYSCALL_NUM;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MemorySet, PhysPageNum, VPNRange, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::syscall::TaskInfo;
 use crate::timer::get_time_ms;
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use alloc::string::String;
 
 /// Task control block structure
 ///
@@ -68,6 +70,9 @@ pub struct TaskControlBlockInner {
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+
+    /// 存放当前自己打开的文件  存放打开的fd 对应的文件名字
+    pub file_table: BTreeMap<usize, String>,
 
     /// Heap bottom
     pub heap_bottom: usize,
@@ -146,6 +151,8 @@ impl TaskControlBlock {
                         // 2 -> stderr
                         Some(Arc::new(Stdout)),
                     ],
+                    file_table:BTreeMap::new(),
+                    // nlink: vec![1; 3],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     taskinfo: TaskInfo {
@@ -237,6 +244,8 @@ impl TaskControlBlock {
                     children: Vec::new(),
                     exit_code: 0,
                     fd_table: new_fd_table,
+                    // 这里要不要修改呢？？
+                    file_table: parent_inner.file_table.clone(),
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     // 直接复制父任务的taskinfo
@@ -343,6 +352,10 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+
+        // copy fd table
+        // let mut new_fd_table : Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
@@ -356,6 +369,8 @@ impl TaskControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
+                    fd_table: parent_inner.fd_table.clone(),
+                    file_table: parent_inner.file_table.clone(),
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     taskinfo: TaskInfo {

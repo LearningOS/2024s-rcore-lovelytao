@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -51,6 +51,12 @@ impl OSInode {
             v.extend_from_slice(&buffer[..len]);
         }
         v
+    }
+
+    /// 获取inode的 block_id 和block_offset
+    pub fn get_inode_block_info(&self) -> (usize, usize) {
+        let inner = self.inner.exclusive_access();
+        inner.inode.read_inode_info()
     }
 }
 
@@ -121,6 +127,42 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
             }
             Arc::new(OSInode::new(readable, writable, inode))
         })
+    }
+
+}
+
+/// 根据名字找到inode
+pub fn get_inode_by_name(name: &str) ->Option<Arc<OSInode>> {
+    if let Some(inode) = ROOT_INODE.find(name) {
+        // clear size
+        inode.clear();
+        Some(Arc::new(OSInode::new(true, true, inode)))
+    } else {
+        None
+    }
+}
+
+/// 将文件链接到新的文件名
+pub fn link_file(old_name: &str, new_name: &str) -> isize {
+    ROOT_INODE.linkat(old_name, new_name)
+}
+
+/// 将文件解链接
+pub fn unlink_file(name: &str) -> isize {
+    ROOT_INODE.unlinkat(name)
+}
+
+/// 根据block_id和block_offset返回对应inodeid和类型
+pub fn get_stat(
+    filename: &str,
+) -> (u32, StatMode, usize) {
+    let (inod_id, mode, nlink) = ROOT_INODE.get_stat(filename);
+
+    if mode == 0 {
+        // 表示我呢见
+        (inod_id, StatMode::FILE, nlink as usize)
+    } else {
+        (inod_id, StatMode::DIR, nlink as usize)
     }
 }
 

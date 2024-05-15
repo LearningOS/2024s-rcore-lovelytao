@@ -29,6 +29,12 @@ impl Inode {
             block_device,
         }
     }
+
+    /// read Inode info
+    pub fn read_inode_info(&self) -> (usize, usize) {
+        (self.block_id, self.block_offset)
+    }
+
     /// Call a function over a disk inode to read it
     fn read_disk_inode<V>(&self, f: impl FnOnce(&DiskInode) -> V) -> V {
         get_block_cache(self.block_id, Arc::clone(&self.block_device))
@@ -59,10 +65,13 @@ impl Inode {
         None
     }
     /// Find inode under current inode by name
+    /// find 方法只会被根目录 Inode 调用，文件系统中其他文件的 Inode 不会调用这个方法
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         let fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
+            // 从根目录的DiskInode上找到要索引的文件名
             self.find_inode_id(name, disk_inode).map(|inode_id| {
+                // 根据查到 inode 编号对应生成一个 Inode 用于后续对文件的访问
                 let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
                 Arc::new(Self::new(
                     block_id,
@@ -138,10 +147,115 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
+
+    /// 硬连接
+    pub fn linkat(&self, old_name: &str, new_name: &str) -> isize {
+        let mut fs = self.fs.lock();
+
+        let op = |root_inode: &DiskInode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(old_name, root_inode)
+        };
+        let old_inode_id = self.read_disk_inode(op).unwrap();
+
+        let (old_block_id, old_block_offset) = fs.get_disk_inode_pos(old_inode_id);
+        get_block_cache(old_block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(old_block_offset, |inode: &mut DiskInode| {
+                inode.nlink += 1;
+            });
+
+        // 将新建的目录项插入到根目录的内容中
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            let dirent = DirEntry::new(new_name, old_inode_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        0
+    }
+
+    /// 解链接
+    pub fn unlinkat(&self, name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(name, root_inode)
+        };
+        let inode_id = self.read_disk_inode(op).unwrap();
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |inode: &mut DiskInode| {
+                inode.nlink -= 1;
+                //  这里应该在考虑一下删除的事情
+                if inode.nlink == 0 {
+                    // 将该文件占据的索引块和数据块在 EasyFileSystem 中回收
+                    let data_blocks_dealloc = inode.clear_size(&self.block_device);
+                    for data_block in data_blocks_dealloc.into_iter() {
+                        fs.dealloc_data(data_block);
+                    }
+                    // dealloce inode_id
+                    fs.dealloc_inode(inode_id as usize);
+                }
+            });
+
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ
+                );
+                if dirent.name() == name {
+                    dirent = DirEntry::empty();
+                    // 将对应的目录项修改为0
+                    root_inode.write_at(DIRENT_SZ * i, dirent.as_bytes(), &self.block_device);
+                    break;
+                }
+            }
+        });
+        0
+    }
+
+    /// 根据block_id和block_offset来获取 inodeid 和 mode
+    pub fn get_stat(&self, filename: &str) -> (u32, u32, u32) {
+        let fs = self.fs.lock();
+        let mut mode: DiskInodeType = DiskInodeType::File;
+        let mut nlink = 0;
+        let op = |root_inode: &DiskInode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(filename, root_inode)
+        };
+        let inode_id = self.read_disk_inode(op).unwrap();
+
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .read(block_offset, |inode: &DiskInode| {
+                mode = inode.get_type();
+                nlink = inode.nlink;
+            });
+        let mut mode_id = 0; // 0表示文件
+        if mode == DiskInodeType::File {
+            mode_id = 0;
+        } else if mode == DiskInodeType::Directory {
+            mode_id = 1;
+        }
+        (block_id, mode_id, nlink)
+    }
+
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
         self.read_disk_inode(|disk_inode| {
+            // disk_inode里存放的都是 DirEntry
             let file_count = (disk_inode.size as usize) / DIRENT_SZ;
             let mut v: Vec<String> = Vec::new();
             for i in 0..file_count {

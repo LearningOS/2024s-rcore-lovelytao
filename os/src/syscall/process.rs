@@ -187,9 +187,10 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     // 先判断文件名是否有效
     let token = current_user_token();
     let ptah = translated_str(token, _path);
-    if let Some(data) = get_app_data_by_name(ptah.as_str()) {
+    if let Some(app_inode) = open_file(ptah.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
         let current_task = current_task().unwrap();
-        let new_task = current_task.spawn(data);
+        let new_task = current_task.spawn(all_data.as_slice());
         let new_pid = new_task.pid.0;
         // let trap_cx: &mut crate::trap::TrapContext = new_task.inner_exclusive_access().get_trap_cx();
 
