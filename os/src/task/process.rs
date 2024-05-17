@@ -39,16 +39,39 @@ pub struct ProcessControlBlockInner {
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
     /// signal flags
     pub signals: SignalFlags,
-    /// tasks(also known as threads)
+    /// tasks(also known as threads)   保存进程下所有线程的任务控制块
     pub tasks: Vec<Option<Arc<TaskControlBlock>>>,
-    /// task resource allocator
+    /// task resource allocator  为进程内的线程分配资源的通用资源分配器
     pub task_res_allocator: RecycleAllocator,
     /// mutex list
+    /// 使用 Vec<Option<T>> 构建一个含有多个可空槽位且槽位数可以拓展的互斥锁表，、
+    /// 【Option可以设置为None，就表示那个位置为空】
+    /// 表中的每个元素都实现了 Mutex Trait
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
     /// semaphore list
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    // 新加数据结构的话应该都加载这里
+    /// 是否启用死锁
+    pub is_enable: usize,
+
+    /// mutex_availabke
+    pub mutex_available: Vec<isize>,
+
+    /// mutex_allocation
+    pub mutex_allocation: Vec<Vec<isize>>,
+    /// mutex_need
+    pub mutex_need: Vec<Vec<isize>>,
+    /// semaphore_available
+    pub semaphore_available: Vec<isize>,
+    /// semaphore_work
+
+    /// semaphore_allocation
+    pub semaphore_allocation: Vec<Vec<isize>>,
+    /// semaphore_need
+    pub semaphore_need: Vec<Vec<isize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -68,10 +91,12 @@ impl ProcessControlBlockInner {
     }
     /// allocate a new task id
     pub fn alloc_tid(&mut self) -> usize {
+        // 创建线程时分配TID
         self.task_res_allocator.alloc()
     }
     /// deallocate a task id
     pub fn dealloc_tid(&mut self, tid: usize) {
+        // 销毁线程时回收TID
         self.task_res_allocator.dealloc(tid)
     }
     /// the count of tasks(threads) in this process
@@ -119,6 +144,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    is_enable: 0,
+                    mutex_available: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    mutex_allocation: Vec::new(),
+                    mutex_need: Vec::new(),
+                    semaphore_allocation: Vec::new(),
+                    semaphore_need: Vec::new(),
                 })
             },
         });
@@ -143,10 +175,20 @@ impl ProcessControlBlock {
         );
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
+        // 将主线程插入到进程的线程列表中。因为此时该列表为空，只需直接 push 即可
         process_inner.tasks.push(Some(Arc::clone(&task)));
+
+        // 因为插入了一个新进程，因此要新增一列
+        process_inner.mutex_allocation.push(Vec::new());
+        process_inner.mutex_need.push(Vec::new());
+        process_inner.semaphore_allocation.push(Vec::new());
+        process_inner.semaphore_need.push(Vec::new());
+
         drop(process_inner);
+        // 维护 PID-进程控制块映射
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
+        // 将主线程加入到任务管理器使得它可以被调度
         add_task(task);
         process
     }
@@ -235,6 +277,7 @@ impl ProcessControlBlock {
                 UPSafeCell::new(ProcessControlBlockInner {
                     is_zombie: false,
                     memory_set,
+                    // 对父进程的弱引用
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
@@ -245,6 +288,13 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    is_enable: 0,
+                    mutex_allocation: Vec::new(),
+                    mutex_available: Vec::new(),
+                    mutex_need: Vec::new(),
+                    semaphore_allocation: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_need: Vec::new(),
                 })
             },
         });
@@ -252,6 +302,8 @@ impl ProcessControlBlock {
         parent.children.push(Arc::clone(&child));
         // create main thread of child process
         let task = Arc::new(TaskControlBlock::new(
+            // 创建子进程的主线程控制块，注意它继承了父进程的 ustack_base ，
+            // 并且不用重新分配用户栈和 Trap 上下文
             Arc::clone(&child),
             parent
                 .get_task(0)
@@ -267,14 +319,22 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+
+        child_inner.mutex_allocation.push(Vec::new());
+        child_inner.mutex_need.push(Vec::new());
+        child_inner.semaphore_allocation.push(Vec::new());
+        child_inner.semaphore_need.push(Vec::new());
+
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
         let trap_cx = task_inner.get_trap_cx();
         trap_cx.kernel_sp = task.kstack.get_top();
         drop(task_inner);
+        // 行将子进程插入到 PID-进程控制块映射中
         insert_into_pid2process(child.getpid(), Arc::clone(&child));
         // add this thread to scheduler
+        // 将子进程的主线程加入到任务管理器中
         add_task(task);
         child
     }

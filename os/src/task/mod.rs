@@ -23,6 +23,7 @@ use self::id::TaskUserRes;
 use crate::fs::{open_file, OpenFlags};
 use crate::task::manager::add_stopping_task;
 use crate::timer::remove_timer;
+use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 use lazy_static::*;
 use manager::fetch_task;
@@ -77,21 +78,42 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
     // take from Processor
+    // 将当前线程出PROCESSOR中拿出来
     let task = take_current_task().unwrap();
     let mut task_inner = task.inner_exclusive_access();
     let process = task.process.upgrade().unwrap();
     let tid = task_inner.res.as_ref().unwrap().tid;
     // record exit code
     task_inner.exit_code = Some(exit_code);
+    // 回收当前线程的线程资源组 u_stak  u_trap
     task_inner.res = None;
     // here we do not remove the thread since we are still using the kstack
     // it will be deallocated when sys_waittid is called
     drop(task_inner);
 
+    let mut process_inner = process.inner_exclusive_access();
+
+    // 将 tid这一列全部置为0
+    process_inner.mutex_allocation[tid]
+        .iter_mut()
+        .for_each(|x| *x = 0);
+    process_inner.mutex_need[tid]
+        .iter_mut()
+        .for_each(|x| *x = 0);
+    process_inner.semaphore_allocation[tid]
+        .iter_mut()
+        .for_each(|x| *x = 0);
+    process_inner.mutex_need[tid]
+        .iter_mut()
+        .for_each(|x| *x = 0);
+
+    drop(process_inner);
     // Move the task to stop-wait status, to avoid kernel stack from being freed
+    // 如果是主线程
     if tid == 0 {
         add_stopping_task(task);
     } else {
+        // 不是主线程退出的话，完成上述操作后，直接丢掉即可
         drop(task);
     }
     // however, if this is the main thread of current process
@@ -111,6 +133,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 crate::board::QEMU_EXIT_HANDLE.exit_success();
             }
         }
+        // 根性PID-进程控制块映射
         remove_from_pid2process(pid);
         let mut process_inner = process.inner_exclusive_access();
         // mark this process as a zombie process
@@ -120,6 +143,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
         {
             // move all child processes under init process
+            // 把当前进程下的子进程都移到 INITPROC下面
             let mut initproc_inner = INITPROC.inner_exclusive_access();
             for child in process_inner.children.iter() {
                 child.inner_exclusive_access().parent = Some(Arc::downgrade(&INITPROC));
@@ -131,6 +155,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         // it has to be done before we dealloc the whole memory_set
         // otherwise they will be deallocated twice
         let mut recycle_res = Vec::<TaskUserRes>::new();
+        // 回收进程中的每一个线程的TaskUserRes，最后一起释放
         for task in process_inner.tasks.iter().filter(|t| t.is_some()) {
             let task = task.as_ref().unwrap();
             // if other tasks are Ready in TaskManager or waiting for a timer to be
@@ -140,6 +165,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             // are limited in a single process. Therefore, the blocked tasks are
             // removed when the PCB is deallocated.
             trace!("kernel: exit_current_and_run_next .. remove_inactive_task");
+            // 主线程退出的时候可能有一些线程处于就绪状态等在任务管理器 TASK_MANAGER 的队列中，
+            // 我们需要及时调用 remove_inactive_task 函数将它们从队列中移除
             remove_inactive_task(Arc::clone(&task));
             let mut task_inner = task.inner_exclusive_access();
             if let Some(res) = task_inner.res.take() {
@@ -203,4 +230,86 @@ pub fn remove_inactive_task(task: Arc<TaskControlBlock>) {
     remove_task(Arc::clone(&task));
     trace!("kernel: remove_inactive_task .. remove_timer");
     remove_timer(Arc::clone(&task));
+}
+
+/// 检查系统是否处于安全状态
+/// f: 查看类型， res：表示要哪个资源, num 表示请求多少个  输出：0表示等待，1表示正确，2表示死锁
+pub fn check_system_state(t: usize, _res: usize, _num: isize) -> bool {
+    let process = current_process();
+    let process_inner = process.inner_exclusive_access();
+    // let tid = current_task()
+    //     .unwrap()
+    //     .inner_exclusive_access()
+    //     .res
+    //     .as_ref()
+    //     .unwrap()
+    //     .tid;
+
+    let (available, need, allocation);
+    if t == 0 {
+        // 0 表示mutex
+        available = process_inner.mutex_available.clone();
+        need = process_inner.mutex_need.clone();
+        allocation = process_inner.mutex_allocation.clone();
+    } else {
+        // 0 表示mutex
+        available = process_inner.semaphore_available.clone();
+        need = process_inner.semaphore_need.clone();
+        allocation = process_inner.semaphore_allocation.clone();
+    }
+
+    drop(process_inner);
+    // if available[res] < num {
+    //     // 不够， 先去等待资源
+    //     return true;
+    // }
+
+    // 先尝试分配。分配完查看是否满足
+    // available[res] -= num;
+    // allocation[tid][res] += num;
+    // need[tid][res] -= num;
+
+    let mut work = available.clone();
+    let mut finish = vec![false; need.len()];
+    let mut i = 0;
+    // println!("tid :{}    finish.len:{}    ", tid, finish.len());
+    while i < finish.len() {
+        // println!("tid :{}   need[{}][{}] = {}, wrok[{}] = {}", tid, i, res, need[i][res],res, work[res]);
+        // if finish[i] == false && need[i][res] <= work[res] {
+        //     // 假设分给他后，能够顺利执行，并且完成释放出分配给它的资源
+        //     work[res] += allocation[i][res];
+        //     println!("add i = {}   work[{}] = {}", i, res, work[res]);
+        //     finish[i] = true;
+
+        //     i = 0;
+        // } else {
+        //     i += 1;
+        // }
+
+        if finish[i] == false {
+            // 懂了！！！！  你每次得比较所有的资源，不能只比较一个
+            // 因为可能当前某一个线程依赖多个资源，因此需要满足所有需求才能进行释放
+            if (0..work.len()).all(|r| need[i][r] <= work[r]) {
+                // 假设分给他后，能够顺利执行，并且完成释放出分配给它的资源
+                for r in 0..work.len() {
+                    work[r] += allocation[i][r];
+                }
+                // println!("add i = {}   work = {:?}", i, work);
+                finish[i] = true;
+                i = 0;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    for i in 0..finish.len() {
+        if !finish[i] {
+            return false;
+        }
+    }
+
+    return true;
 }

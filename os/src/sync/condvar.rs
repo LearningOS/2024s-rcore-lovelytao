@@ -30,6 +30,7 @@ impl Condvar {
     /// Signal a task waiting on the condition variable
     pub fn signal(&self) {
         let mut inner = self.inner.exclusive_access();
+        // 从等待队列里找到一个任务，并唤醒
         if let Some(task) = inner.wait_queue.pop_front() {
             wakeup_task(task);
         }
@@ -43,6 +44,7 @@ impl Condvar {
         inner.wait_queue.push_back(current_task().unwrap());
         drop(inner);
         block_current_and_run_next();
+        // 下次执行的时候重新回到这里执行
         mutex.lock();
     }
 }

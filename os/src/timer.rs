@@ -54,6 +54,8 @@ impl PartialEq for TimerCondVar {
 impl Eq for TimerCondVar {}
 impl PartialOrd for TimerCondVar {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        // 标准的BinaryHeap是一个大根堆
+        // 我们需要小根堆，因此将他们取反进行比较
         let a = -(self.expire_ms as isize);
         let b = -(other.expire_ms as isize);
         Some(a.cmp(&b))

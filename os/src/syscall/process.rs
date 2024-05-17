@@ -1,3 +1,4 @@
+use crate::timer::get_time_us;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
@@ -8,7 +9,6 @@ use crate::{
     },
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
-
 #[repr(C)]
 #[derive(Debug)]
 pub struct TimeVal {
@@ -164,10 +164,16 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let us = get_time_us();
+    let ts = translated_refmut(current_user_token(), _ts);
+    *ts = TimeVal {
+        sec: us / 1_1000_000,
+        usec: us % 1_1000_000,
+    };
+    0
 }
 
 /// task_info syscall

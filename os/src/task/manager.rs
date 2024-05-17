@@ -11,7 +11,7 @@ use lazy_static::*;
 ///A array of `TaskControlBlock` that is thread-safe
 pub struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
-    
+
     /// The stopping task, leave a reference so that the kernel stack will not be recycled when switching tasks
     stop_task: Option<Arc<TaskControlBlock>>,
 }
@@ -50,7 +50,6 @@ impl TaskManager {
         // case) so that we can simply replace it;
         self.stop_task = Some(task);
     }
-
 }
 
 lazy_static! {
@@ -62,7 +61,7 @@ lazy_static! {
         unsafe { UPSafeCell::new(BTreeMap::new()) };
 }
 
-/// Add a task to ready queue
+/// 将线程加入就绪队列
 pub fn add_task(task: Arc<TaskControlBlock>) {
     //trace!("kernel: TaskManager::add_task");
     TASK_MANAGER.exclusive_access().add(task);
@@ -72,18 +71,19 @@ pub fn add_task(task: Arc<TaskControlBlock>) {
 pub fn wakeup_task(task: Arc<TaskControlBlock>) {
     trace!("kernel: TaskManager::wakeup_task");
     let mut task_inner = task.inner_exclusive_access();
+    // 将线程状态修改为就绪状态 Ready 并将线程加回到就绪队列。
     task_inner.task_status = TaskStatus::Ready;
     drop(task_inner);
     add_task(task);
 }
 
-/// Remove a task from the ready queue
+/// 将线程移除出就绪队列
 pub fn remove_task(task: Arc<TaskControlBlock>) {
     //trace!("kernel: TaskManager::remove_task");
     TASK_MANAGER.exclusive_access().remove(task);
 }
 
-/// Fetch a task out of the ready queue
+/// 从就绪队列中选出一个线程分配 CPU 资源
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     //trace!("kernel: TaskManager::fetch_task");
     TASK_MANAGER.exclusive_access().fetch()
@@ -94,18 +94,18 @@ pub fn add_stopping_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.exclusive_access().add_stop(task);
 }
 
-/// Get process by pid
+/// 根据 PID 查询进程控制块
 pub fn pid2process(pid: usize) -> Option<Arc<ProcessControlBlock>> {
     let map = PID2PCB.exclusive_access();
     map.get(&pid).map(Arc::clone)
 }
 
-/// Insert item(pid, pcb) into PID2PCB map (called by do_fork AND ProcessControlBlock::new)
+/// 增加一对 PID-进程控制块映射 | Insert item(pid, pcb) into PID2PCB map (called by do_fork AND ProcessControlBlock::new)
 pub fn insert_into_pid2process(pid: usize, process: Arc<ProcessControlBlock>) {
     PID2PCB.exclusive_access().insert(pid, process);
 }
 
-/// Remove item(pid, _some_pcb) from PDI2PCB map (called by exit_current_and_run_next)
+/// 删除一对 PID-进程控制块映射 | Remove item(pid, _some_pcb) from PDI2PCB map (called by exit_current_and_run_next)
 pub fn remove_from_pid2process(pid: usize) {
     let mut map = PID2PCB.exclusive_access();
     if map.remove(&pid).is_none() {

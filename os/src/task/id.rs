@@ -84,23 +84,29 @@ pub struct KernelStack(pub usize);
 
 /// Allocate a kernel stack for a task
 pub fn kstack_alloc() -> KernelStack {
+    // 分配一个kstack_id
     let kstack_id = KSTACK_ALLOCATOR.exclusive_access().alloc();
+    // 获取对应的kstack bottom和top
     let (kstack_bottom, kstack_top) = kernel_stack_position(kstack_id);
+    // 在内核空间进行映射
     KERNEL_SPACE.exclusive_access().insert_framed_area(
         kstack_bottom.into(),
         kstack_top.into(),
         MapPermission::R | MapPermission::W,
     );
+    // 返回kstack_id
     KernelStack(kstack_id)
 }
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
+        // 只需要stack bottom既可以进行回收
         let (kernel_stack_bottom, _) = kernel_stack_position(self.0);
         let kernel_stack_bottom_va: VirtAddr = kernel_stack_bottom.into();
         KERNEL_SPACE
             .exclusive_access()
             .remove_area_with_start_vpn(kernel_stack_bottom_va.into());
+        // 回收Kstack id
         KSTACK_ALLOCATOR.exclusive_access().dealloc(self.0);
     }
 }
@@ -126,21 +132,23 @@ impl KernelStack {
     }
 }
 
-/// User Resource for a task
+/// User Resource for a task |每个线程独占的用户态资源
 pub struct TaskUserRes {
     /// task id
     pub tid: usize,
-    /// user stack base
+    /// user stack base | 直到ustack_base 和tid就可以算出自己的stack了
     pub ustack_base: usize,
     /// process belongs to
     pub process: Weak<ProcessControlBlock>,
 }
 /// Return the bottom addr (low addr) of the trap context for a task
 fn trap_cx_bottom_from_tid(tid: usize) -> usize {
+    // Trap 从TRAMPOLINE开始依次往下放0 1 2 3
     TRAP_CONTEXT_BASE - tid * PAGE_SIZE
 }
 /// Return the bottom addr (high addr) of the user stack for a task
 fn ustack_bottom_from_tid(ustack_base: usize, tid: usize) -> usize {
+    // 从ustack_base开始依次往上放0 1 2 3 ，每次空一个空的page
     ustack_base + tid * (PAGE_SIZE + USER_STACK_SIZE)
 }
 
@@ -151,10 +159,12 @@ impl TaskUserRes {
         ustack_base: usize,
         alloc_user_res: bool,
     ) -> Self {
+        // 分配一个TID用于初始化
         let tid = process.inner_exclusive_access().alloc_tid();
         let task_user_res = Self {
             tid,
             ustack_base,
+            // 变成Weak  downgrade  Arc -> Weak
             process: Arc::downgrade(&process),
         };
         if alloc_user_res {
@@ -163,12 +173,14 @@ impl TaskUserRes {
         task_user_res
     }
     /// Allocate user resource for a task
+    /// 在进程地址空间中实际映射线程的用户栈和Trap上下文
     pub fn alloc_user_res(&self) {
         let process = self.process.upgrade().unwrap();
         let mut process_inner = process.inner_exclusive_access();
         // alloc user stack
         let ustack_bottom = ustack_bottom_from_tid(self.ustack_base, self.tid);
         let ustack_top = ustack_bottom + USER_STACK_SIZE;
+        // 在进程的地址空间中映射 用户栈和Trap上下文
         process_inner.memory_set.insert_framed_area(
             ustack_bottom.into(),
             ustack_top.into(),

@@ -15,6 +15,7 @@ pub trait Mutex: Sync + Send {
 }
 
 /// Spinlock Mutex struct
+/// 基于yield机制的锁
 pub struct MutexSpin {
     locked: UPSafeCell<bool>,
 }
@@ -53,6 +54,7 @@ impl Mutex for MutexSpin {
 }
 
 /// Blocking Mutex struct
+/// 基于阻塞机制的锁
 pub struct MutexBlocking {
     inner: UPSafeCell<MutexBlockingInner>,
 }
@@ -83,6 +85,8 @@ impl Mutex for MutexBlocking {
         trace!("kernel: MutexBlocking::lock");
         let mut mutex_inner = self.inner.exclusive_access();
         if mutex_inner.locked {
+            // 把当前的任务放进这个锁的wait_queue里
+            // 难怪block_current_and_run_next里可以直接扔掉
             mutex_inner.wait_queue.push_back(current_task().unwrap());
             drop(mutex_inner);
             block_current_and_run_next();
@@ -97,6 +101,7 @@ impl Mutex for MutexBlocking {
         let mut mutex_inner = self.inner.exclusive_access();
         assert!(mutex_inner.locked);
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
+            // 从等待队列中取出来然后激活
             wakeup_task(waking_task);
         } else {
             mutex_inner.locked = false;

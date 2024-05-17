@@ -104,6 +104,7 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 }
 
 /// get the user virtual address of trap context
+/// 当前线程Trap上下文在进程地址空间中的地址
 pub fn current_trap_cx_user_va() -> usize {
     current_task()
         .unwrap()
@@ -115,11 +116,13 @@ pub fn current_trap_cx_user_va() -> usize {
 }
 
 /// get the top addr of kernel stack
+/// 当前线程内核栈在内核地址空间中的地址
 pub fn current_kstack_top() -> usize {
     current_task().unwrap().kstack.get_top()
 }
 
 /// Return to idle control flow for new scheduling
+/// 将当前线程的内核态上下文保存指定位置，并切换到调度主循环
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let mut processor = PROCESSOR.exclusive_access();
     let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
