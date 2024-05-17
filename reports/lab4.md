@@ -1,40 +1,17 @@
 ### 功能总结：
-- 实现了银行家算法，过程中遇到的最大问题就是一开始根据提示给的公式`Need[i,j] <= Work[j];`，将j误认为只比较请求的资源，后来不断调试过程中，理解到这里的j表示所有资源的范围0..res_list.len()。因为某个线程能释放所有资源的话，需要他的所有需求被满足才能对所有资源进行释放，因此在对比的过程中如果只对比某一个单一的资源，会少判断一些依赖关系。
+- 实现了获取文件状态【inode编号，文件类型，硬链接数】系统调用
+- 实现了目录对文件的硬链接
 
 
 ### 问答题：
-1. 在我们的多线程实现中，当主线程 (即 0 号线程) 退出时，视为整个进程退出， 此时需要结束该进程管理的所有线程并回收其资源。 - 需要回收的资源有哪些？ - 其他线程的 TaskControlBlock 可能在哪些位置被引用，分别是否需要回收，为什么？
-    - 当前的线程，当前线程的线程资源组，将当前进行下的子进程全部移动到init进程下面，回收当前进程中所有线程
-    - 其他线程的 TaskControlBlock 可能处于就绪状态等在任务管理器TASK_NABAGER的一列中，因此需要通过remove_inactive_task将他们从队列中移除，不然会导致他们的引用计数不能成功归零并回收资源。
-2. 对比以下两种 Mutex.unlock 的实现，二者有什么区别？这些区别可能会导致什么问题？
-    ```
-    1    1impl Mutex for Mutex1 {
-    2    fn unlock(&self) {
-    3        let mut mutex_inner = self.inner.exclusive_access();
-    4        assert!(mutex_inner.locked);
-    5        mutex_inner.locked = false;
-    6        if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
-    7            add_task(waking_task);
-    8        }
-    9    }
-    10}
-    11
-    12impl Mutex for Mutex2 {
-    13    fn unlock(&self) {
-    14        let mut mutex_inner = self.inner.exclusive_access();
-    15        assert!(mutex_inner.locked);
-    16        if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
-    17            add_task(waking_task);
-    18        } else {
-    19            mutex_inner.locked = false;
-    20        }
-    21    }
-    22}
-    ```
-    - 在Mutex1中，无论是否有等待任务，都会将locked标志位设置为false。然后再去尝试唤醒等待任务（没有就不唤醒）
-        - 假设正好有一个线程想要去lock这把锁，他就会先把锁抢走，导致原本处于阻塞中的线程，无法获得该锁去执行。
-    - 在Mutex2中，会先去看有没有等待的任务，有的话去唤醒等待任务。只有当没有任务时候，才会吧locked设置为false
-        - 会造成，解锁后每次优先唤起等待队列里的进程，此时如果在等待队列外有一个优先级较高的任务需要执行的话，需要一直等待前面的任务执行完，才能获得锁。
+CH6
+1. 在我们的easy-fs中，root inode起着什么作用？如果root inode中的内容损坏了，会发生什么？
+    - root inode 作为根目录的inode，在我们的easy-fs中，对于任何文件/目录的索引都必须从根目录开始向下逐级进行。如果root inode里的内容遭到破坏，则无法根据root inode里存放的block_id和offset找到root inode对应的DiskInode，就无法根据DiskInode正确找到对应文件的DirEntry，程序无法正确的找到根目录下的文件。也无法对文件进行其他任何操作，因为找不到对应的文件。
+CH7
+1. 举出使用 pipe 的一个实际应用的例子。
+    - cat hello.txt | wc -l  可以对hello.txt文件进行行数统计
+2. 如果需要在多个进程间互相通信，则需要为每一对进程建立一个管道，非常繁琐，请设计一个更易用的多进程通信机制。
+    - 可以利用消息队列来进行实现，例如两个进程AB，进程A创建一个消息队列，获取消息队列的标识符，将准备好的消息发送到消息队列中。B进程同样创建一个消息队列，该消息队列标识符与进程A的一致，B进程从消息队列中接收消息，根据消息进行相应的操作，进程B也可以发送一个响应消息传回进程A。通信结束后，进程AB关闭并删除消息队列。
 
 ### 荣誉准则
 1. 在完成本次实验的过程（含此前学习的过程）中，我曾分别与 以下各位 就（与本次实验相关的）以下方面做过交流，还在代码中对应的位置以注释形式记录了具体的交流对象及内容：
